@@ -288,7 +288,7 @@ def main() -> None:
         f"  train / val   : {len(train_loader.dataset)} / {len(val_loader.dataset)}\n"
         f"  参数 / 温度   : {n_params:,} / {args.temperature}\n"
     )
-
+    # --------------- 输出目录 ---------------
     # 每次运行新建一个独立文件夹：outputs/<被试>_task-<任务>_day-<day>_<时间戳>/
     # 文件夹名带被试/任务/day 和时间戳，便于区分多次运行。
     run_id = time.strftime("%Y%m%d-%H%M%S")
@@ -300,6 +300,8 @@ def main() -> None:
     final_val_path = run_dir / "final_val.csv"  # 本次运行最终 val 结果
     print(f"  输出目录      : {run_dir}\n")
 
+    # ---------------- 训练/验证 ----------------
+    # 记录最佳 val top1 的 epoch、top1、topk、cos+
     best_top1 = -1.0
     best_epoch = 0
     best_val_metrics = None
