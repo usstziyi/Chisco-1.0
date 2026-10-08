@@ -93,6 +93,7 @@ def train_one_epoch(
     total_loss = 0.0
     total_top1 = 0.0
     seen = 0
+    total_steps = min(len(loader), max_batches) if max_batches else len(loader)
     for step, batch in enumerate(loader):
         if max_batches and step >= max_batches:
             break
@@ -104,9 +105,18 @@ def train_one_epoch(
         loss.backward()
         optimizer.step()
 
-        total_loss += loss.item() * len(batch["text"])
-        total_top1 += in_batch_top1(eeg_emb.detach(), text_emb) * len(batch["text"])
-        seen += len(batch["text"])
+        batch_size = len(batch["text"])
+        top1 = in_batch_top1(eeg_emb.detach(), text_emb)
+
+        total_loss += loss.item() * batch_size
+        total_top1 += top1 * batch_size
+        seen += batch_size
+
+        print(
+            f"  step {step + 1:4d}/{total_steps} | "
+            f"loss {loss.item():.4f} | top1 {top1:.3f} | bs {batch_size}",
+            flush=True,
+        )
     return {"loss": total_loss / seen, "top1": total_top1 / seen, "n": seen}
 
 
