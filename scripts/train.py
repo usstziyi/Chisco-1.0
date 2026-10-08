@@ -224,7 +224,7 @@ def main() -> None:
     parser.add_argument("--days", type=int, nargs="+", required=True, help="day 编号，可传多个，如 --days 1 2 3")
     parser.add_argument("--val-ratio", type=float, default=0.2, help="验证集比例")
     parser.add_argument("--epochs", type=int, default=20, help="训练轮数")
-    parser.add_argument("--batch-size", type=int, default=16, help="batch size")
+    parser.add_argument("--batch-size", type=int, default=32, help="batch size")
     parser.add_argument("--lr", type=float, default=1e-3, help="学习率")
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="权重衰减")
     parser.add_argument("--temperature", type=float, default=0.07, help="InfoNCE 温度")
