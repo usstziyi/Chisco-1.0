@@ -10,8 +10,9 @@
         trial : (N,), int32
 
 划分策略:
-    把 days 里的所有 day 样本拼成一个数据集，按固定 seed 打乱后，
-    取 val_ratio 比例作为验证集（train / val 都会包含各个 day 的样本）。
+    把 days 里的所有 day 样本拼成一个数据集，跨 day 重复的句子先去掉
+    （保留首次出现的那条），再按固定 seed 打乱，取 val_ratio 比例作为
+    验证集（train / val 都会包含各个 day 的样本）。
 
 样本格式 (每条 __getitem__ 返回 dict):
     return_meta=False (默认，纯训练，只含 eeg/text):
@@ -269,23 +270,53 @@ def split_train_val(
 # Multi-day dataset / DataLoader
 # ============================================================
 
+def unique_text_indices(datasets: Sequence[ChiscoEEGDataset]) -> list[int]:
+    """返回「每个文本只保留首次出现」的全局索引（按 days 顺序）。
+
+    day 内的重复已由 prepare_dataset 处理，这里主要解决跨 day 重复：
+    同一个句子在多个 day 都出现时，只留 days 顺序里最靠前的那条。
+    全局索引即拼接后的下标。
+    """
+    keep: list[int] = []
+    seen: set[str] = set()
+    offset = 0
+    for dataset in datasets:
+        for local_idx, text in enumerate(dataset.y):
+            text = str(text)
+            if text not in seen:
+                seen.add(text)
+                keep.append(offset + local_idx)
+        offset += len(dataset)
+    return keep
+
+
 def build_dataset(
     subject: str,
     task: str,
     days: Sequence[int],
     return_meta: bool = False,
 ) -> Dataset:
-    """构建（可能是多 day 拼接后的）Dataset。
+    """构建（可能是多 day 拼接后的）Dataset，并去掉跨 day 的重复句子。
 
     只传一个 day 时直接返回 ChiscoEEGDataset；
     多个 day 时用 ConcatDataset 拼接，不复制底层数组。
+
+    去重:
+        同一个句子的样本只保留首次出现的那条（按 days 顺序）。
+        否则该句子可能同时落在 train / val：既会在 in-batch 对比里
+        变成假负样本，也会让 val 的 top-k 被低估。
     """
     day_list = normalize_days(days)
     datasets = [
         ChiscoEEGDataset(subject, task, day, return_meta=return_meta)
         for day in day_list
     ]
-    return datasets[0] if len(datasets) == 1 else ConcatDataset(datasets)
+    dataset: Dataset = datasets[0] if len(datasets) == 1 else ConcatDataset(datasets)
+
+    keep = unique_text_indices(datasets)
+    if len(keep) == len(dataset):
+        return dataset  # 没有跨 day 重复，保持原对象（保留 subject/n_chans 等属性）
+    return Subset(dataset, keep)
 
 
 def build_dataloaders(
@@ -302,8 +333,9 @@ def build_dataloaders(
 ) -> tuple[DataLoader, DataLoader]:
     """构建（多 day 合并后的）train / val DataLoader。
 
-    days 里的所有 day 会拼成一个数据集，再按 seed 随机划分，因此
-    train / val 都会包含各个 day 的样本。返回:
+    days 里的所有 day 会拼成一个数据集，跨 day 重复的句子先去掉（保留
+    首次出现的那条），再按 seed 随机划分，因此 train / val 都会包含各个
+    day 的样本。返回:
         (train_loader, val_loader)
 
     return_meta=False (默认) 时 batch 只含:

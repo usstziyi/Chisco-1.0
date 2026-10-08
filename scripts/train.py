@@ -3,7 +3,7 @@
 组合的三个文件:
     encoder/eeg_encoder_tsconv_fixed.py  → TSConvFixedEEGEncoder
     encoder/text_encoder_labse.py        → LaBSETextEncoder（冻结，带文本缓存）
-    scripts/dataloader.py                → 多 day 合并后划分 train / val
+    scripts/dataloader.py                → 多 day 合并 + 跨天去重后划分 train / val
 
 对齐方式:
     EEG  encoder 输出 (B, D)，已 L2 归一化
@@ -18,13 +18,13 @@
     val loss、val top-1 / top-5 检索准确率（对整个 val 集做排序）
 
 说明:
-    单个 day 的文本实测全部唯一，因此 in-batch 对比不存在
-    「重复句子 = 假负样本」问题。LaBSE 冻结且按文本做内存缓存，
-    多 epoch 下每条文本只编码一次。
-
-    注意: 多 day 合并（--days 传多个）时，不同 day 可能出现相同句子，
-    in-batch 对比会出现假负样本，val 的 top-k 也会被低估（评估时
-    仍按「第 i 条 EEG 对应第 i 条文本」判定）。多天场景下请留意这点。
+    重复句子已在两层去掉：
+        prepare_dataset.py 保存 npz 时去掉同一天内重复的句子；
+        dataloader.build_dataset 去掉跨 day 重复的句子。
+    因此无论传单个还是多个 --days，每个句子在数据集里只出现一次，
+    in-batch 对比不存在「重复句子 = 假负样本」问题，val 的 top-k 也
+    按「第 i 条 EEG 对应第 i 条文本」成立。
+    LaBSE 冻结且按文本做内存缓存，多 epoch 下每条文本只编码一次。
 
 用法:
     uv run python scripts/train.py --subject 01 --task imagine --days 1 2 3
@@ -211,8 +211,8 @@ def evaluate(eeg_encoder, loader, text_encoder, device, temperature, max_batches
 def probe_eeg_shape(loader) -> tuple[int, int]:
     """取一条样本的 EEG shape，得到 (n_chans, n_times)。
 
-    不能直接用 loader.dataset.n_chans：多 day 时它是 ConcatDataset，
-    没有 n_chans / n_times 属性。
+    不能直接用 loader.dataset.n_chans：多 day 或去重后拿到的是
+    ConcatDataset / Subset，都不带 n_chans / n_times 属性。
     """
     return tuple(loader.dataset[0]["eeg"].shape)
 
