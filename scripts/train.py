@@ -222,7 +222,6 @@ def main() -> None:
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="权重衰减")
     parser.add_argument("--temperature", type=float, default=0.07, help="InfoNCE 温度")
     parser.add_argument("--drop-prob", type=float, default=0.5, help="TSConv dropout")
-    parser.add_argument("--embedding-dim", type=int, default=768, help="embedding 维度")
     parser.add_argument("--topk", type=int, default=5, help="检索 top-k 的 k")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader worker 数")
@@ -259,22 +258,22 @@ def main() -> None:
     n_chans, n_times = dataset.n_chans, dataset.n_times
 
     # ---------------- 模型 ----------------
-    eeg_encoder = TSConvFixedEEGEncoder(
-        n_chans=n_chans,
-        n_times=n_times,
-        drop_prob=args.drop_prob,
-        embedding_dim=args.embedding_dim,
-    ).to(device)
-
     text_encoder = LaBSETextEncoder(
         model_name=args.text_model,
     ).to(device)
-    
-    if text_encoder.embedding_dim != args.embedding_dim:
-        raise ValueError(
-            f"embedding 维度不一致: 文本 {text_encoder.embedding_dim} "
-            f"vs 模型 {args.embedding_dim}"
-        )
+
+    eeg_encoder = TSConvFixedEEGEncoder(
+        n_chans=n_chans,
+        n_times=n_times,
+        k=40,
+        m1=50,
+        m2=100,
+        s=20,
+        projection_hidden_dim=512,
+        embedding_dim=text_encoder.embedding_dim,
+        drop_prob=args.drop_prob
+    ).to(device)
+
 
     optimizer = torch.optim.AdamW(
         eeg_encoder.parameters(), lr=args.lr, weight_decay=args.weight_decay
