@@ -17,6 +17,10 @@
         "trial": int,
     }
 
+保存 NPZ 前会做一步清洗:
+    同一天内 text 相同的样本只保留第一次出现的那条。
+    load_days / load / load_all / save_days 均适用。
+
 用法:
     uv run python scripts/prepare_dataset.py --task read
     uv run python scripts/prepare_dataset.py --subject 01 --task imagine
@@ -214,12 +218,30 @@ def read_runs(paths: list[Path]) -> list[dict]:
     return records
 
 
+def dedup_text(records: list[dict]) -> list[dict]:
+    """按 text 去重，只保留第一次出现的样本。
+
+    作用范围是传进来的这批 records（即一个 day），跨天的重复不在这里处理。
+    """
+    seen: set[str] = set()
+    kept: list[dict] = []
+    for record in records:
+        text = str(record["text"])
+        if text in seen:
+            continue
+        seen.add(text)
+        kept.append(record)
+    return kept
+
+
 # ============================================================
 # Public loading API
 # ============================================================
 
 def load_days(subject: str, task: str) -> list[list[dict]]:
     """按天加载指定 subject/task。
+
+    每个 day 内部按 text 去重，只保留第一次出现的样本。
 
     返回:
         [
@@ -235,20 +257,23 @@ def load_days(subject: str, task: str) -> list[list[dict]]:
         trial
     """
     subject = normalize_subject(subject)
-    return [read_runs(paths) for _, paths in day_chunks(subject, task)]
+    return [
+        dedup_text(read_runs(paths))
+        for _, paths in day_chunks(subject, task)
+    ]
 
 
 def load(subject: str, task: str) -> list[dict]:
     """加载指定 subject/task 的全部 run。
 
-    按:
+    每个 day 内部按 text 去重（只保留第一次出现的样本），再按:
         day -> run -> trial
 
     的顺序合并为一个 list[dict]。
     """
     records: list[dict] = []
     for _, paths in day_chunks(subject, task):
-        records.extend(read_runs(paths))
+        records.extend(dedup_text(read_runs(paths)))
     return records
 
 
@@ -302,6 +327,8 @@ def prepare_eeg(input_features: np.ndarray) -> np.ndarray:
 def save_days(subject: str, task: str) -> list[Path]:
     """按天保存为 NPZ。
 
+    同一天内 text 重复的样本只保留第一次出现的那条。
+
     输出目录:
         datasets/{subject}/
 
@@ -333,6 +360,8 @@ def save_days(subject: str, task: str) -> list[Path]:
         records = read_runs(chunk)
         if not records:
             continue
+        # 同一天内 text 重复的样本只保留第一次出现的
+        records = dedup_text(records)
         # EEG
         eeg_list = [prepare_eeg(r["input_features"]) for r in records]
         # 确认所有 trial shape 一致
