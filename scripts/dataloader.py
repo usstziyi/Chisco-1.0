@@ -258,6 +258,7 @@ def build_dataloaders(
     seed: int = 0,
     pin_memory: bool = False,
     return_meta: bool = False,
+    drop_last: bool = False,
 ) -> tuple[DataLoader, DataLoader]:
     """构建单个 day 的 train / val DataLoader。
 
@@ -273,6 +274,10 @@ def build_dataloaders(
         "text":  list[str]
         "run":   (B,)
         "trial": (B,)
+
+    drop_last:
+        只作用于 train_loader。训练时建议 True，避免出现 batch=1
+        的尾批把含 BatchNorm 的模型打挂；val_loader 始终保留全部样本。
     """
     dataset = ChiscoEEGDataset(subject, task, day, return_meta=return_meta)
     train_idx, val_idx = split_train_val(len(dataset), val_ratio=val_ratio, seed=seed)
@@ -289,7 +294,7 @@ def build_dataloaders(
         num_workers=num_workers,
         pin_memory=pin_memory,
         generator=generator,
-        drop_last=False,
+        drop_last=drop_last,
     )
     val_loader = DataLoader(
         val_set,
