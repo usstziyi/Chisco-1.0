@@ -10,8 +10,8 @@
         trial : (N,), int32
 
 划分策略:
-    在「单个 day 内部」随机划分 train / val。
-    同一个 day 的 trial 按固定 seed 打乱后，取 val_ratio 比例作为验证集。
+    把 days 里的所有 day 样本拼成一个数据集，按固定 seed 打乱后，
+    取 val_ratio 比例作为验证集（train / val 都会包含各个 day 的样本）。
 
 样本格式 (每条 __getitem__ 返回 dict):
     return_meta=False (默认，纯训练，只含 eeg/text):
@@ -33,7 +33,7 @@
         "text":  list[str]  (长度 B)
 
 用法:
-    uv run python scripts/dataloader.py --subject 01 --task imagine --day 1
+    uv run python scripts/dataloader.py --subject 01 --task imagine --days 1 2 3
 
 作为模块导入:
     from dataloader import ChiscoEEGDataset, build_dataloaders
@@ -41,7 +41,7 @@
     train_loader, val_loader = build_dataloaders(
         subject="01",
         task="imagine",
-        day=1,
+        days=[1, 2, 3],
         val_ratio=0.2,
         batch_size=16,
         # return_meta=True,   # 需要 run/trial（评测/调试）时再打开
@@ -54,10 +54,11 @@
 
 import argparse
 from pathlib import Path
+from typing import Sequence
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset
 
 
 # ============================================================
@@ -112,6 +113,25 @@ def day_path(subject: str, task: str, day: int) -> Path:
             f"--task {task} --save-days"
         )
     return path
+
+
+def normalize_days(days: Sequence[int]) -> list[int]:
+    """把 days 统一成升序去重的正整数列表。
+
+    支持 "1"、"01"、1 这类写法，返回如 [1, 2, 3]。
+    """
+    try:
+        day_list = [int(day) for day in days]
+    except TypeError as e:
+        raise ValueError(
+            f"days 应为一组 day 编号，如 [1, 2, 3]，收到: {days!r}"
+        ) from e
+    if not day_list:
+        raise ValueError("days 不能为空")
+    for day in day_list:
+        if day <= 0:
+            raise ValueError(f"day 必须 > 0，收到: {day}")
+    return sorted(set(day_list))
 
 
 # ============================================================
@@ -213,8 +233,9 @@ def split_train_val(
     val_ratio: float = 0.2,
     seed: int = 0,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """在单个 day 内部把样本索引划成 train / val。
+    """把样本索引划成 train / val。
 
+    多 day 时作用于拼接后的全部样本。
     返回按索引升序排列的 (train_idx, val_idx)。
 
     Parameters
@@ -245,13 +266,32 @@ def split_train_val(
 
 
 # ============================================================
-# DataLoader
+# Multi-day dataset / DataLoader
 # ============================================================
+
+def build_dataset(
+    subject: str,
+    task: str,
+    days: Sequence[int],
+    return_meta: bool = False,
+) -> Dataset:
+    """构建（可能是多 day 拼接后的）Dataset。
+
+    只传一个 day 时直接返回 ChiscoEEGDataset；
+    多个 day 时用 ConcatDataset 拼接，不复制底层数组。
+    """
+    day_list = normalize_days(days)
+    datasets = [
+        ChiscoEEGDataset(subject, task, day, return_meta=return_meta)
+        for day in day_list
+    ]
+    return datasets[0] if len(datasets) == 1 else ConcatDataset(datasets)
+
 
 def build_dataloaders(
     subject: str,
     task: str,
-    day: int,
+    days: Sequence[int],
     val_ratio: float = 0.2,
     batch_size: int = 16,
     num_workers: int = 0,
@@ -260,9 +300,10 @@ def build_dataloaders(
     return_meta: bool = False,
     drop_last: bool = False,
 ) -> tuple[DataLoader, DataLoader]:
-    """构建单个 day 的 train / val DataLoader。
+    """构建（多 day 合并后的）train / val DataLoader。
 
-    划分在 day 内部完成，返回:
+    days 里的所有 day 会拼成一个数据集，再按 seed 随机划分，因此
+    train / val 都会包含各个 day 的样本。返回:
         (train_loader, val_loader)
 
     return_meta=False (默认) 时 batch 只含:
@@ -279,7 +320,7 @@ def build_dataloaders(
         只作用于 train_loader。训练时建议 True，避免出现 batch=1
         的尾批把含 BatchNorm 的模型打挂；val_loader 始终保留全部样本。
     """
-    dataset = ChiscoEEGDataset(subject, task, day, return_meta=return_meta)
+    dataset = build_dataset(subject, task, days, return_meta=return_meta)
     train_idx, val_idx = split_train_val(len(dataset), val_ratio=val_ratio, seed=seed)
 
     train_set = Subset(dataset, train_idx.tolist())
@@ -312,12 +353,10 @@ def build_dataloaders(
 # ============================================================
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="构建 Chisco-1.0 单 day 的 train/val DataLoader"
-    )
+    parser = argparse.ArgumentParser(description="构建 Chisco-1.0 的 train/val DataLoader（支持多 day）")
     parser.add_argument("--subject", required=True, help="被试编号，如 01 或 sub-01")
     parser.add_argument("--task", required=True, choices=list(TASKS), help="任务类型")
-    parser.add_argument("--day", type=int, required=True, help="day 编号，从 1 开始")
+    parser.add_argument("--days", type=int, nargs="+", required=True, help="day 编号，可传多个，如 --days 1 2 3")
     parser.add_argument("--val-ratio", type=float, default=0.2, help="验证集比例")
     parser.add_argument("--batch-size", type=int, default=16, help="batch size")
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader worker 数")
@@ -326,29 +365,28 @@ def main() -> None:
     args = parser.parse_args()
 
     return_meta = args.meta
+    subject = normalize_subject(args.subject)
+    days = normalize_days(args.days)
 
-    dataset = ChiscoEEGDataset(
-        args.subject, args.task, args.day, return_meta=return_meta
-    )
-    print(
-        f"{dataset.subject} / {dataset.task} / day-{dataset.day:02d}\n"
-        f"  文件: {dataset.path}\n"
-        f"  样本数: {len(dataset)}\n"
-        f"  EEG shape: ({dataset.n_chans}, {dataset.n_times})"
-    )
+    print(f"{subject} / {args.task} / days={days}")
+    for day in days:
+        print(f"  day-{day:02d}: {day_path(subject, args.task, day).name}")
 
     train_loader, val_loader = build_dataloaders(
-        subject=args.subject,
+        subject=subject,
         task=args.task,
-        day=args.day,
+        days=days,
         val_ratio=args.val_ratio,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         seed=args.seed,
         return_meta=return_meta,
     )
+    sample_eeg = train_loader.dataset[0]["eeg"]
     print(
-        f"\ntrain: {len(train_loader.dataset)} 条, {len(train_loader)} 个 batch\n"
+        f"\n样本数: {len(train_loader.dataset) + len(val_loader.dataset)}\n"
+        f"  EEG shape: {tuple(sample_eeg.shape)}\n"
+        f"train: {len(train_loader.dataset)} 条, {len(train_loader)} 个 batch\n"
         f"val:   {len(val_loader.dataset)} 条, {len(val_loader)} 个 batch"
     )
 

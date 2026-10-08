@@ -3,7 +3,7 @@
 组合的三个文件:
     encoder/eeg_encoder_tsconv_fixed.py  → TSConvFixedEEGEncoder
     encoder/text_encoder_labse.py        → LaBSETextEncoder（冻结，带文本缓存）
-    scripts/dataloader.py                → 单 day 内部划分 train / val
+    scripts/dataloader.py                → 多 day 合并后划分 train / val
 
 对齐方式:
     EEG  encoder 输出 (B, D)，已 L2 归一化
@@ -22,12 +22,16 @@
     「重复句子 = 假负样本」问题。LaBSE 冻结且按文本做内存缓存，
     多 epoch 下每条文本只编码一次。
 
+    注意: 多 day 合并（--days 传多个）时，不同 day 可能出现相同句子，
+    in-batch 对比会出现假负样本，val 的 top-k 也会被低估（评估时
+    仍按「第 i 条 EEG 对应第 i 条文本」判定）。多天场景下请留意这点。
+
 用法:
-    uv run python scripts/train.py --subject 01 --task imagine --day 1
-    uv run python scripts/train.py --subject 01 --task imagine --day 1 --epochs 50
+    uv run python scripts/train.py --subject 01 --task imagine --days 1 2 3
+    uv run python scripts/train.py --subject 01 --task imagine --days 1 2 3 --epochs 50
 
 快速冒烟（只跑少量 batch）:
-    uv run python scripts/train.py --subject 01 --task imagine --day 1 --max-batches 3
+    uv run python scripts/train.py --subject 01 --task imagine --days 1 2 3 --max-batches 3
 """
 
 import argparse
@@ -53,7 +57,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # 所以 from dataloader import ... 直接可用。
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from dataloader import build_dataloaders
+from dataloader import build_dataloaders, normalize_days, normalize_subject
 from encoder import LaBSETextEncoder, TSConvFixedEEGEncoder
 
 
@@ -68,7 +72,7 @@ EPOCH_LOG_FIELDS = [
 
 # 本次运行最终 val 结果的汇总字段
 FINAL_VAL_FIELDS = [
-    "subject", "task", "day", "run_id", "device",
+    "subject", "task", "days", "run_id", "device",
     "n_chans", "n_times", "epochs", "best_epoch",
     "best_val_loss", "best_val_top1", "best_val_topk", "best_val_k", "best_val_cos_pos",
     "last_val_loss", "last_val_top1", "last_val_topk", "last_val_cos_pos",
@@ -204,17 +208,20 @@ def evaluate(eeg_encoder, loader, text_encoder, device, temperature, max_batches
 # Main
 # ============================================================
 
-def base_dataset(loader):
-    """从 DataLoader(Subset(ChiscoEEGDataset)) 里取回原始 dataset。"""
-    dataset = loader.dataset
-    return getattr(dataset, "dataset", dataset)
+def probe_eeg_shape(loader) -> tuple[int, int]:
+    """取一条样本的 EEG shape，得到 (n_chans, n_times)。
+
+    不能直接用 loader.dataset.n_chans：多 day 时它是 ConcatDataset，
+    没有 n_chans / n_times 属性。
+    """
+    return tuple(loader.dataset[0]["eeg"].shape)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="训练 Chisco-1.0 EEG→Text 检索模型")
     parser.add_argument("--subject", required=True, help="被试编号，如 01 或 sub-01")
     parser.add_argument("--task", required=True, choices=["read", "imagine"], help="任务类型")
-    parser.add_argument("--day", type=int, default=1, help="day 编号，从 1 开始")
+    parser.add_argument("--days", type=int, nargs="+", required=True, help="day 编号，可传多个，如 --days 1 2 3")
     parser.add_argument("--val-ratio", type=float, default=0.2, help="验证集比例")
     parser.add_argument("--epochs", type=int, default=20, help="训练轮数")
     parser.add_argument("--batch-size", type=int, default=16, help="batch size")
@@ -227,10 +234,7 @@ def main() -> None:
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader worker 数")
     parser.add_argument("--device", default=None, help="cuda / cpu，默认自动选择")
     parser.add_argument("--text-model", default="sentence-transformers/LaBSE", help="文本编码模型名")
-    parser.add_argument(
-        "--max-batches", type=int, default=0,
-        help="每轮最多跑多少个 batch（0 表示不限制，用于冒烟测试）",
-    )
+    parser.add_argument("--max-batches", type=int, default=0, help="每轮最多跑多少个 batch（0 表示不限制，用于冒烟测试）")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -241,10 +245,14 @@ def main() -> None:
     )
 
     # ---------------- 数据 ----------------
+    subject = normalize_subject(args.subject)
+    days = normalize_days(args.days)
+    days_tag = "-".join(f"{d:02d}" for d in days)
+
     train_loader, val_loader = build_dataloaders(
-        subject=args.subject,
+        subject=subject,
         task=args.task,
-        day=args.day,
+        days=days,
         val_ratio=args.val_ratio,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
@@ -254,8 +262,7 @@ def main() -> None:
         # 生效；CPU 上开着不会报错，但只会刷一条 UserWarning 且无收益。
         pin_memory=(device.type == "cuda"),
     )
-    dataset = base_dataset(train_loader)
-    n_chans, n_times = dataset.n_chans, dataset.n_times
+    n_chans, n_times = probe_eeg_shape(train_loader)
 
     # ---------------- 模型 ----------------
     text_encoder = LaBSETextEncoder(
@@ -281,17 +288,17 @@ def main() -> None:
 
     n_params = sum(p.numel() for p in eeg_encoder.parameters() if p.requires_grad)
     print(
-        f"{dataset.subject} / {dataset.task} / day-{dataset.day:02d}\n"
+        f"{subject} / {args.task} / days={days_tag}\n"
         f"  device        : {device}\n"
         f"  EEG           : ({n_chans}, {n_times})\n"
         f"  train / val   : {len(train_loader.dataset)} / {len(val_loader.dataset)}\n"
         f"  参数 / 温度   : {n_params:,} / {args.temperature}\n"
     )
     # --------------- 输出目录 ---------------
-    # 每次运行新建一个独立文件夹：outputs/<被试>_task-<任务>_day-<day>_<时间戳>/
-    # 文件夹名带被试/任务/day 和时间戳，便于区分多次运行。
+    # 每次运行新建一个独立文件夹：outputs/<被试>_task-<任务>_days-<day列表>_<时间戳>/
+    # 文件夹名带被试/任务/days 和时间戳，便于区分多次运行。
     run_id = time.strftime("%Y%m%d-%H%M%S")
-    run_name = f"{dataset.subject}_task-{dataset.task}_day-{dataset.day:02d}_{run_id}"
+    run_name = f"{subject}_task-{args.task}_days-{days_tag}_{run_id}"
     run_dir = OUTPUTS_DIR / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = run_dir / "best.pt"          # 最佳权重
@@ -364,9 +371,9 @@ def main() -> None:
 
     # 本次运行最终 val 结果（含最佳与最后一轮）
     write_csv_row(final_val_path, FINAL_VAL_FIELDS, {
-        "subject": dataset.subject,
-        "task": dataset.task,
-        "day": dataset.day,
+        "subject": subject,
+        "task": args.task,
+        "days": days_tag,
         "run_id": run_id,
         "device": str(device),
         "n_chans": n_chans,
