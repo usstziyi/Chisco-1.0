@@ -13,16 +13,18 @@
     * start_event / end_event / occurrence   由事件描述确定绘制区间
     * tmin / tmax                      直接指定时间区间（秒，相对原始记录起点）
 
-用法（命令行只暴露 --fif / --epoch / --tmin / --tmax，被试目录由文件名解析得到）：
-    uv run python plot_fif.py --fif sub-01_task-imagine_run-01_eeg.fif
+用法（命令行暴露 --fif / --epoch / --tmin / --tmax / --n-channels）：
+    # --fif 直接当路径用（相对当前目录或绝对路径均可），不做被试目录解析
+    uv run python plot_fif.py --fif preprocessed_fif/sub-05/eeg/sub-05_task-read_run-01_eeg.fif
     uv run python plot_fif.py --fif D:/abs/path/xxx.fif     # 也可直接给绝对路径
-    uv run python plot_fif.py --fif sub-01_task-imagine_run-01_eeg.fif --tmin 300 --tmax 310
-    uv run python plot_fif.py --fif sub-01_task-imagine_run-01_eeg.fif --epoch 19
+    uv run python plot_fif.py --fif preprocessed_fif/sub-05/eeg/sub-05_task-read_run-01_eeg.fif --tmin 300 --tmax 310
+    uv run python plot_fif.py --fif preprocessed_fif/sub-05/eeg/sub-05_task-imagine_run-01_eeg.fif --epoch 19
+    uv run python plot_fif.py --fif preprocessed_fif/sub-05/eeg/sub-05_task-read_run-01_eeg.fif --n-channels 20
 
 绘图区间 / 通道数等由代码内部默认值决定：
-    * n_channels = 10
+    * n_channels = 10（可用 --n-channels 覆盖）
     * 未指定 tmin / tmax / 事件时，从第一条 annotation（或第一个 epoch）起绘制 DEFAULT_WINDOW 秒
-    * 图片默认保存到 <subject>/plot/<文件名>_plot.png
+    * 图片默认保存到脚本同级目录下的 test/plot/<文件名>_plot.png
 """
 
 import argparse
@@ -41,9 +43,9 @@ PREP_ROOT = ROOT_FOLDER / "preprocess_output" / METHOD_STR
 DEFAULT_WINDOW = 10.0
 
 
-def plot_folder(fif_file):
-    """图片默认保存目录，与被试的 fif 同级：<subject>/plot。"""
-    return fif_file.parent.parent / "plot"
+def plot_folder():
+    """图片默认保存目录：脚本同级目录下的 plot/（即 test/plot）。"""
+    return ROOT_FOLDER / "plot"
 
 
 def _fif_kind(fif_file):
@@ -222,8 +224,6 @@ def plot_eeg_window(
         if ch_type == "eeg"
     ]
 
-    for i, (name, ch_type) in enumerate(zip(inst.ch_names, inst.get_channel_types())):
-        print(i, name, ch_type)
 
     selected = list(channels) if channels is not None else eeg_names[:n_channels]
     if not selected:
@@ -322,7 +322,7 @@ def plot_eeg_window(
     # show=False：保存图片，不弹窗
     if output is None:
         suffix = f"_ep{epoch:03d}" if epoch is not None else ""
-        output = plot_folder(fif_file) / f"{fif_file.stem}{suffix}_plot.png"
+        output = plot_folder() / f"{fif_file.stem}{suffix}_plot.png"
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=150)
@@ -339,8 +339,8 @@ def main():
     parser.add_argument(
         "--fif",
         required=True,
-        help="fif 文件名，如 sub-02_ses-01_task-para1_run-01_eeg.fif；"
-        "被试目录由文件名解析得到",
+        help="fif 文件路径（相对当前目录或绝对路径均可），"
+        "如 preprocessed_fif/sub-05/eeg/sub-05_task-read_run-01_eeg.fif",
     )
     parser.add_argument(
         "--epoch",
@@ -350,13 +350,23 @@ def main():
     )
     parser.add_argument("--tmin", type=float, default=None, help="起始时间（秒）")
     parser.add_argument("--tmax", type=float, default=None, help="结束时间（秒）")
+    parser.add_argument(
+        "--n-channels",
+        type=int,
+        default=10,
+        help="绘制的 EEG 通道数量（从 EEG 通道中按顺序取前 n 个，默认 10）",
+    )
     args = parser.parse_args()
 
     if args.epoch is not None and (args.tmin is not None or args.tmax is not None):
         parser.error("--epoch 与 --tmin/--tmax 不能同时使用。")
 
     plot_eeg_window(
-        fif_file=args.fif, epoch=args.epoch, tmin=args.tmin, tmax=args.tmax
+        fif_file=args.fif,
+        epoch=args.epoch,
+        tmin=args.tmin,
+        tmax=args.tmax,
+        n_channels=args.n_channels,
     )
 
 
