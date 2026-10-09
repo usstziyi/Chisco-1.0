@@ -64,6 +64,11 @@ from encoder import LaBSETextEncoder, TSConvFixedEEGEncoder
 
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 
+# 数据里的 EEG 是伏特(V)，量级 ~1e-6，远小于 BatchNorm 的 eps(1e-5)，
+# 会让 eval 模式的归一化被 eps 主导、与 train 模式不一致（val 恒为随机）。
+# 这里在喂给 encoder 前统一换算成微伏(µV)，即 V -> µV。
+EEG_SCALE = 1e6
+
 # 每轮 epoch 追加写入的日志字段
 EPOCH_LOG_FIELDS = [
     "epoch", "train_loss", "train_top1",
@@ -138,7 +143,8 @@ def train_one_epoch(
         if max_batches and step >= max_batches:
             break
         text_emb = text_encoder.encode_unique(batch["text"])
-        eeg_emb = eeg_encoder(batch["eeg"].to(device, non_blocking=True))
+        eeg = batch["eeg"].to(device, non_blocking=True) * EEG_SCALE  # V -> µV
+        eeg_emb = eeg_encoder(eeg)
         loss = info_nce(eeg_emb, text_emb, temperature)
 
         optimizer.zero_grad(set_to_none=True)
@@ -171,7 +177,7 @@ def evaluate(eeg_encoder, loader, text_encoder, device, temperature, max_batches
     for step, batch in enumerate(loader):
         if max_batches and step >= max_batches:
             break
-        eeg = batch["eeg"].to(device, non_blocking=True)
+        eeg = batch["eeg"].to(device, non_blocking=True) * EEG_SCALE  # V -> µV
         text_emb = text_encoder.encode_unique(batch["text"])
         eeg_emb = eeg_encoder(eeg)
 
