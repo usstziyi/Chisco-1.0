@@ -4,7 +4,7 @@ TSConv + Pointwise Conv EEG Encoder.
 适用于固定长度 EEG，例如 Chisco-1.0：
 
     单条 EEG:
-        (125, 1651)
+        (122, 1651)
 
 整体结构：
 
@@ -106,7 +106,7 @@ class TSConvPointwiseEEGEncoder(nn.Module):
 
         默认：
 
-            (B, 125, 1651)
+            (B, 122, 1651)
 
 
     Output
@@ -124,7 +124,7 @@ class TSConvPointwiseEEGEncoder(nn.Module):
 
     def __init__(
         self,
-        n_chans: int = 125,
+        n_chans: int = 122,
         n_times: int = 1651,
 
         # TSConv
@@ -335,7 +335,7 @@ class TSConvPointwiseEEGEncoder(nn.Module):
             #
             # 默认：
             #
-            #     (B, 1, 125, 1651)
+            #     (B, 1, 122, 1651)
             #
             #
             # Output:
@@ -344,7 +344,7 @@ class TSConvPointwiseEEGEncoder(nn.Module):
             #
             # 默认：
             #
-            #     (B, 40, 125, 1627)
+            #     (B, 40, 122, 1627)
             # ------------------------------------------------
 
             nn.Conv2d(
@@ -367,7 +367,7 @@ class TSConvPointwiseEEGEncoder(nn.Module):
             #
             # 默认：
             #
-            #     (B, 40, 125, 316)
+            #     (B, 40, 122, 316)
             # ------------------------------------------------
 
             nn.AvgPool2d(
@@ -400,7 +400,7 @@ class TSConvPointwiseEEGEncoder(nn.Module):
             #
             # 默认：
             #
-            #     (B, 40, 125, 316)
+            #     (B, 40, 122, 316)
             #
             # →
             #
@@ -526,7 +526,7 @@ class TSConvPointwiseEEGEncoder(nn.Module):
 
             默认：
 
-                (B, 125, 1651)
+                (B, 122, 1651)
 
 
         Returns
@@ -595,11 +595,11 @@ class TSConvPointwiseEEGEncoder(nn.Module):
         #
         # 默认：
         #
-        # (B, 125, 1651)
+        # (B, 122, 1651)
         #
         # →
         #
-        # (B, 1, 125, 1651)
+        # (B, 1, 122, 1651)
         #
         # ====================================================
 
@@ -611,7 +611,7 @@ class TSConvPointwiseEEGEncoder(nn.Module):
         # 5. TSConv
         # ====================================================
         #
-        # (B, 1, 125, 1651)
+        # (B, 1, 122, 1651)
         #
         # →
         #
@@ -720,7 +720,7 @@ if __name__ == "__main__":
         # Chisco-1.0 EEG
         # ----------------------------------------------------
 
-        n_chans=125,
+        n_chans=122,
         n_times=1651,
 
         # ----------------------------------------------------
@@ -805,7 +805,7 @@ if __name__ == "__main__":
 
     eeg = torch.randn(
         batch_size,
-        125,
+        122,
         1651,
     )
 

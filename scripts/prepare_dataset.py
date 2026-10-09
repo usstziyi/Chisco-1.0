@@ -8,7 +8,7 @@
 官方每个 pkl 为 list[dict]，每个元素大致为:
     {
         "text": str,
-        "input_features": ndarray,   # 通常 shape=(1, 125, 1651)
+        "input_features": ndarray,   # 通常 shape=(1, 125, T)
     }
 
     input_features 的 125 个通道并非全是 EEG：
@@ -309,8 +309,8 @@ def load_all(task: str) -> dict[str, list[dict]]:
 def prepare_eeg(input_features: np.ndarray) -> np.ndarray:
     """把官方 PKL 中单条 EEG 转成 (C, T)，并只保留 EEG 通道。
 
-    官方数据通常:
-        (1, 125, 1651)
+    官方数据形状:
+        (1, 125, T)     # imagine 通常 T=1651，read 通常 T=2501
 
     通道布局（已核对）:
         前 122 个通道是 EEG，末尾 3 个是 2×EOG + 1×STIM
@@ -320,7 +320,7 @@ def prepare_eeg(input_features: np.ndarray) -> np.ndarray:
     不裁时间，不改变物理单位。
 
     输出:
-        (122, 1651)
+        (122, T)
 
     dtype:
         float32
