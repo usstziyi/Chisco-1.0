@@ -23,7 +23,7 @@
 
 用法:
     uv run python scripts/prepare_dataset.py --task read
-    uv run python scripts/prepare_dataset.py --subject 01 --task imagine
+    uv run python scripts/prepare_dataset.py --subject 01 --task imagine --save-days
     uv run python scripts/prepare_dataset.py --subject 01 --task read --save-days
 
 作为模块导入:
