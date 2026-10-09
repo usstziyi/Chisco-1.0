@@ -29,6 +29,7 @@
 用法:
     uv run python scripts/train.py --subject 01 --task imagine --days 1 2 3 4 5
     uv run python scripts/train.py --subject 01 --task imagine --days 1 2 3 4 5 --epochs 50
+    uv run python scripts/train.py --subject 01 --task read --days 1 2 3 4 5 --epochs 50
 
 快速冒烟（只跑少量 batch）:
     uv run python scripts/train.py --subject 01 --task imagine --days 1 2 3 4 5 --max-batches 3
