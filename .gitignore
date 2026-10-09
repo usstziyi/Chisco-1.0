@@ -16,4 +16,4 @@ outputs/
 
 datasets/
 
-test/
+*.fif
