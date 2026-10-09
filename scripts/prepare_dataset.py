@@ -11,6 +11,11 @@
         "input_features": ndarray,   # 通常 shape=(1, 125, 1651)
     }
 
+    input_features 的 125 个通道并非全是 EEG：
+        前 122 个是 EEG，末尾 3 个是 2×EOG + 1×STIM
+        （末尾 3 个的具体顺序随被试 / run 变化，EEG 始终在前 122 个）。
+    保存 NPZ 时只保留这 122 个 EEG 通道。
+
 本脚本会在加载时额外补充:
     {
         "run": int,
@@ -69,6 +74,13 @@ DATA_ROOT = PROJECT_ROOT / "chisco" / "derivatives" / "preprocessed_pkl"
 DATASETS_ROOT = PROJECT_ROOT / "datasets"
 
 RUNS_PER_DAY = 9
+
+# 官方 pkl 的 input_features 通道布局（已核对 sub-01..05）:
+#   共 125 个通道 = 122 EEG + 2 EOG + 1 STIM，
+#   其中 EEG 始终是前 122 个，末尾 3 个的排列顺序随被试 / run 变化。
+# 保存 NPZ 时只保留 EEG 通道。
+N_PKL_CHANNELS = 125
+N_EEG_CHANNELS = 122
 
 
 # ============================================================
@@ -295,16 +307,20 @@ def load_all(task: str) -> dict[str, list[dict]]:
 # ============================================================
 
 def prepare_eeg(input_features: np.ndarray) -> np.ndarray:
-    """把官方 PKL 中单条 EEG 转成 (C, T)。
+    """把官方 PKL 中单条 EEG 转成 (C, T)，并只保留 EEG 通道。
 
     官方数据通常:
         (1, 125, 1651)
 
-    本函数只去掉最前面的 singleton epoch 维，
-    不裁通道，不裁时间，不改变物理单位。
+    通道布局（已核对）:
+        前 122 个通道是 EEG，末尾 3 个是 2×EOG + 1×STIM
+        （末尾 3 个的具体顺序随被试 / run 变化）。
+
+    本函数去掉最前面的 singleton epoch 维，丢弃末尾 3 个非 EEG 通道，
+    不裁时间，不改变物理单位。
 
     输出:
-        (125, 1651)
+        (122, 1651)
 
     dtype:
         float32
@@ -317,6 +333,12 @@ def prepare_eeg(input_features: np.ndarray) -> np.ndarray:
     if x.shape[0] != 1:
         raise ValueError(f"input_features 第 0 维应为 1，实际 shape={x.shape}")
     x = np.squeeze(x, axis=0)
+    if x.shape[0] != N_PKL_CHANNELS:
+        raise ValueError(
+            f"通道数应为 {N_PKL_CHANNELS}（{N_EEG_CHANNELS} EEG + 3 非 EEG），"
+            f"实际 {x.shape[0]}"
+        )
+    x = x[:N_EEG_CHANNELS]  # 只保留前 122 个 EEG 通道
     return x.astype(np.float32, copy=False)
 
 
