@@ -1,9 +1,17 @@
-"""训练 Chisco-1.0 的 EEG→Text 检索模型（对比学习）。
+"""训练 Chisco-1.0 的 EEG→Text 检索模型（对比学习），使用 TSConvPointwiseEEGEncoder。
+
+与 scripts/train.py 的区别仅在于 EEG 编码器：
+    train.py                     → encoder/eeg_encoder_tsconv_fixed.py    TSConvFixedEEGEncoder
+    train_tsconv_pointwise.py    → encoder/eeg_encoder_tsconv_pointwise.py TSConvPointwiseEEGEncoder
+
+TSConvPointwiseEEGEncoder 在 spatial conv 之后多接了一段 1×1 pointwise conv
+（pointwise_channels，默认 8）来压缩 feature 通道，其余 backbone 与 fixed 版一致。
+除编码器外，数据处理、val 划分、EEG_SCALE、损失与指标逻辑都与 train.py 保持一致。
 
 组合的三个文件:
-    encoder/eeg_encoder_tsconv_fixed.py  → TSConvFixedEEGEncoder
-    encoder/text_encoder_labse.py        → LaBSETextEncoder（冻结，带文本缓存）
-    scripts/dataloader.py                → 多 day 合并 + 跨天去重后划分 train / val
+    encoder/eeg_encoder_tsconv_pointwise.py → TSConvPointwiseEEGEncoder
+    encoder/text_encoder_labse.py           → LaBSETextEncoder（冻结，带文本缓存）
+    scripts/dataloader.py                   → 多 day 合并 + 跨天去重后划分 train / val
 
 对齐方式:
     EEG  encoder 输出 (B, D)，已 L2 归一化
@@ -27,12 +35,19 @@
     LaBSE 冻结且按文本做内存缓存，多 epoch 下每条文本只编码一次。
 
 用法:
-    uv run python scripts/train.py --subject 01 --task imagine --days 1 2 3 4 5
-    uv run python scripts/train.py --subject 01 --task imagine --days 1 2 3 4 5 --epochs 50
-    uv run python scripts/train.py --subject 01 --task read --days 1 2 3 4 5 --epochs 50
+    uv run python scripts/train_tsconv_pointwise.py --subject 01 --task imagine --days 1 2 3 4 5
+    uv run python scripts/train_tsconv_pointwise.py --subject 01 --task imagine --days 1 2 3 4 5 --epochs 50
+    uv run python scripts/train_tsconv_pointwise.py --subject 01 --task read --days 1 2 3 4 5 --epochs 50
+    uv run python scripts/train_tsconv_pointwise.py --subject 01 --task imagine --days 1 2 3 4 5 --epochs 50 --normalize
+
+按通道 z-score（可选，--normalize）:
+    在 EEG_SCALE(V->µV) 之后、喂给 encoder 之前，对每个 (样本, 通道) 在时间维上
+    减均值、除标准差，使每个通道零均值、单位方差。
+    注意 z-score 是尺度不变的，会中和掉 EEG_SCALE，所以顺序必须是
+    「先 EEG_SCALE、后 z-score」，否则乘 1e6 会把量级放大。
 
 快速冒烟（只跑少量 batch）:
-    uv run python scripts/train.py --subject 01 --task imagine --days 1 2 3 4 5 --max-batches 3
+    uv run python scripts/train_tsconv_pointwise.py --subject 01 --task imagine --days 1 2 3 4 5 --max-batches 3
 """
 
 import argparse
@@ -53,13 +68,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # 让 encoder 包可导入。
 #
-# scripts 目录不必手动加：python scripts/train.py 时，
+# scripts 目录不必手动加：python scripts/train_tsconv_pointwise.py 时，
 # Python 已把脚本所在目录放在 sys.path[0]，
 # 所以 from dataloader import ... 直接可用。
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from dataloader import build_dataloaders, normalize_days, normalize_subject
-from encoder import LaBSETextEncoder, TSConvFixedEEGEncoder
+from encoder import LaBSETextEncoder, TSConvPointwiseEEGEncoder
 
 
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
@@ -127,12 +142,23 @@ def in_batch_top1(eeg_emb: torch.Tensor, text_emb: torch.Tensor) -> float:
     return (eeg_emb @ text_emb.t()).argmax(dim=1).eq(labels).float().mean().item()
 
 
+def zscore_per_channel(eeg: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """按通道 z-score：对每个 (样本, 通道) 在时间维上减均值、除标准差。
+
+    输入 (B, C, T)，输出同 shape。
+    常量通道 std=0，用 eps 兜底避免除零。
+    """
+    mean = eeg.mean(dim=-1, keepdim=True)
+    std = eeg.std(dim=-1, keepdim=True, unbiased=False)
+    return (eeg - mean) / (std + eps)
+
+
 # ============================================================
 # 训练 / 验证
 # ============================================================
 
 def train_one_epoch(
-    eeg_encoder, loader, text_encoder, optimizer, device, temperature, max_batches,
+    eeg_encoder, loader, text_encoder, optimizer, device, temperature, max_batches, normalize,
 ) -> dict:
     eeg_encoder.train()
     total_loss = 0.0
@@ -144,6 +170,8 @@ def train_one_epoch(
             break
         text_emb = text_encoder.encode_unique(batch["text"])
         eeg = batch["eeg"].to(device, non_blocking=True) * EEG_SCALE  # V -> µV
+        if normalize:
+            eeg = zscore_per_channel(eeg)  # 按通道 z-score（在 EEG_SCALE 之后）
         eeg_emb = eeg_encoder(eeg)
         loss = info_nce(eeg_emb, text_emb, temperature)
 
@@ -167,7 +195,7 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def evaluate(eeg_encoder, loader, text_encoder, device, temperature, max_batches, topk) -> dict:
+def evaluate(eeg_encoder, loader, text_encoder, device, temperature, max_batches, topk, normalize) -> dict:
     eeg_encoder.eval()
     total_loss = 0.0
     seen = 0
@@ -178,6 +206,8 @@ def evaluate(eeg_encoder, loader, text_encoder, device, temperature, max_batches
         if max_batches and step >= max_batches:
             break
         eeg = batch["eeg"].to(device, non_blocking=True) * EEG_SCALE  # V -> µV
+        if normalize:
+            eeg = zscore_per_channel(eeg)  # 按通道 z-score（在 EEG_SCALE 之后）
         text_emb = text_encoder.encode_unique(batch["text"])
         eeg_emb = eeg_encoder(eeg)
 
@@ -225,7 +255,7 @@ def probe_eeg_shape(loader) -> tuple[int, int]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="训练 Chisco-1.0 EEG→Text 检索模型")
+    parser = argparse.ArgumentParser(description="训练 Chisco-1.0 EEG→Text 检索模型（TSConvPointwiseEEGEncoder）")
     parser.add_argument("--subject", required=True, help="被试编号，如 01 或 sub-01")
     parser.add_argument("--task", required=True, choices=["read", "imagine"], help="任务类型")
     parser.add_argument("--days", type=int, nargs="+", required=True, help="day 编号，可传多个，如 --days 1 2 3")
@@ -236,6 +266,8 @@ def main() -> None:
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="权重衰减")
     parser.add_argument("--temperature", type=float, default=0.07, help="InfoNCE 温度")
     parser.add_argument("--drop-prob", type=float, default=0.5, help="TSConv dropout")
+    parser.add_argument("--pointwise-channels", type=int, default=8, help="1×1 pointwise conv 输出通道数")
+    parser.add_argument("--normalize", action="store_true", help="按通道 z-score 归一化（默认关）")
     parser.add_argument("--topk", type=int, default=5, help="检索 top-k 的 k")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader worker 数")
@@ -276,13 +308,14 @@ def main() -> None:
         model_name=args.text_model,
     ).to(device)
 
-    eeg_encoder = TSConvFixedEEGEncoder(
+    eeg_encoder = TSConvPointwiseEEGEncoder(
         n_chans=n_chans,
         n_times=n_times,
         k=40,
         m1=50,
         m2=100,
         s=20,
+        pointwise_channels=args.pointwise_channels,
         projection_hidden_dim=512,
         embedding_dim=text_encoder.embedding_dim,
         drop_prob=args.drop_prob
@@ -298,6 +331,7 @@ def main() -> None:
         f"{subject} / {args.task} / days={days_tag}\n"
         f"  device        : {device}\n"
         f"  EEG           : ({n_chans}, {n_times})\n"
+        f"  归一化        : {'按通道 z-score' if args.normalize else '无（仅 V->µV）'}\n"
         f"  train / val   : {len(train_loader.dataset)} / {len(val_loader.dataset)}\n"
         f"  参数 / 温度   : {n_params:,} / {args.temperature}\n"
     )
@@ -322,11 +356,11 @@ def main() -> None:
         t0 = time.perf_counter()
         train_metrics = train_one_epoch(
             eeg_encoder, train_loader, text_encoder, optimizer,
-            device, args.temperature, args.max_batches,
+            device, args.temperature, args.max_batches, args.normalize,
         )
         val_metrics = evaluate(
             eeg_encoder, val_loader, text_encoder, device,
-            args.temperature, args.max_batches, args.topk,
+            args.temperature, args.max_batches, args.topk, args.normalize,
         )
         dt = time.perf_counter() - t0
 

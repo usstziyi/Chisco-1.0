@@ -15,3 +15,5 @@ chisco/
 outputs/
 
 datasets/
+
+*.fif

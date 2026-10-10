@@ -27,12 +27,12 @@
     LaBSE 冻结且按文本做内存缓存，多 epoch 下每条文本只编码一次。
 
 用法:
-    uv run python scripts/train.py --subject 01 --task imagine --days 1 2 3 4 5
-    uv run python scripts/train.py --subject 01 --task imagine --days 1 2 3 4 5 --epochs 50
-    uv run python scripts/train.py --subject 01 --task read --days 1 2 3 4 5 --epochs 50
+    uv run python scripts/train_1.py --subject 01 --task imagine --days 1 2 3 4 5
+    uv run python scripts/train_1.py --subject 01 --task imagine --days 1 2 3 4 5 --epochs 50
+    uv run python scripts/train_1.py --subject 01 --task read --days 1 2 3 4 5 --epochs 50
 
 快速冒烟（只跑少量 batch）:
-    uv run python scripts/train.py --subject 01 --task imagine --days 1 2 3 4 5 --max-batches 3
+    uv run python scripts/train_1.py --subject 01 --task imagine --days 1 2 3 4 5 --max-batches 3
 """
 
 import argparse
@@ -45,6 +45,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.utils.data import DataLoader, Subset
 
 # Hugging Face 镜像，与 encoder/text_encoder_labse.py 保持一致
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
@@ -270,6 +271,22 @@ def main() -> None:
         pin_memory=(device.type == "cuda"),
     )
     n_chans, n_times = probe_eeg_shape(train_loader)
+
+    # ------------- 验证集：从 train_dataset 里随机挑 100 条 -------------
+    # 训练仍然用完整的 train_loader；
+    # val 只是 train_dataset 的一个 100 条随机子集（顺序固定、shuffle=False），
+    # 注意：这 100 条同时也在训练集里，会随训练一起被拟合。
+    val_size = min(100, len(train_loader.dataset))
+    generator = torch.Generator().manual_seed(args.seed)
+    val_indices = torch.randperm(
+        len(train_loader.dataset), generator=generator
+    )[:val_size].tolist()
+    val_loader = DataLoader(
+        Subset(train_loader.dataset, val_indices),
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+    )
 
     # ---------------- 模型 ----------------
     text_encoder = LaBSETextEncoder(

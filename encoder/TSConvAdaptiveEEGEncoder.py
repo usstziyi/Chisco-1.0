@@ -60,7 +60,7 @@ class TSConvAdaptiveEEGEncoder(nn.Module):
 
     def __init__(
         self,
-        n_chans: int = 125,
+        n_chans: int = 122,
         k: int = 40,
         m1: int = 25,
         m2: int = 51,
@@ -476,7 +476,7 @@ if __name__ == "__main__":
     # ========================================================
 
     model = TSConvAdaptiveEEGEncoder(
-        n_chans=125,
+        n_chans=122,
 
         # NICE TSConv
         k=40,
@@ -503,19 +503,19 @@ if __name__ == "__main__":
 
     eeg_short = torch.randn(
         batch_size,
-        125,
+        122,
         2000,
     )
 
     eeg_medium = torch.randn(
         batch_size,
-        125,
+        122,
         2800,
     )
 
     eeg_long = torch.randn(
         batch_size,
-        125,
+        122,
         3600,
     )
 

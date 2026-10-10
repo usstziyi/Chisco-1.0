@@ -105,7 +105,7 @@ class TSConvFixedEEGEncoder(nn.Module):
 
     def __init__(
         self,
-        n_chans: int = 125,
+        n_chans: int = 122,
         n_times: int = 1651,
         k: int = 40,
         m1: int = 25,
@@ -590,7 +590,7 @@ if __name__ == "__main__":
     model = TSConvFixedEEGEncoder(
 
         # EEG
-        n_chans=125,
+        n_chans=122,
         n_times=1651,
 
         # NICE TSConv

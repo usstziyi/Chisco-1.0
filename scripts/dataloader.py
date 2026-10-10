@@ -17,7 +17,7 @@
 样本格式 (每条 __getitem__ 返回 dict):
     return_meta=False (默认，纯训练，只含 eeg/text):
         {
-            "eeg":   FloatTensor, shape=(C, T)  # 默认 (125, 1651)
+            "eeg":   FloatTensor, shape=(C, T)  # 默认 (122, 1651)
             "text":  str                        # 原始句子，留给训练脚本自行用 LaBSE 编码
         }
 
@@ -48,7 +48,7 @@
         # return_meta=True,   # 需要 run/trial（评测/调试）时再打开
     )
     for batch in train_loader:
-        eeg = batch["eeg"]        # (B, 125, 1651)
+        eeg = batch["eeg"]        # (B, 122, 1651)
         texts = batch["text"]     # list[str]
         ...
 """
