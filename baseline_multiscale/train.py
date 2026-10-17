@@ -20,7 +20,9 @@
 --------
 默认 ``--kernels 9,25,51``（500 Hz 下 18 / 50 / 102 ms），三支按约 2 倍几何级数
 铺开；默认 ``--pool-kernel 9 --pool-stride 5``（18 ms 窗、10 ms 跳步），避免 50 ms
-的池化窗把快支带进来的高频重新平均掉。详细推导见 ``baseline_multiscale/model.py``。
+的池化窗把快支带进来的高频重新平均掉。时间卷积的 same padding 使用
+``padding_mode="replicate"``，避免零填充在句子首尾引入阶跃伪瞬变。
+详细推导见 ``baseline_multiscale/model.py``。
 想跑其它划分时直接传参即可，例如::
 
     --kernels 7,15,31,63      # 四支，更密的尺度

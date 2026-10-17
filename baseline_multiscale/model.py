@@ -6,7 +6,7 @@
 
     (B, C, T)
         ↓  ×input_scale，并 unsqueeze 成 (B, 1, C, T)
-    多尺度时间卷积（三支并行，same padding）
+    多尺度时间卷积（三支并行，same padding，边界 replicate）
         Conv(1→11, 1×9)   ┐
         Conv(1→11, 1×25)  ├→ concat → (B, 32, C, T)
         Conv(1→10, 1×51)  ┘
@@ -39,6 +39,18 @@
 等于把 20 Hz 以上全部压掉——快支刚带进来的 gamma / 高 beta 会被这一步重新平均没了，
 多尺度就退化成单一低通。这里改成 ``AvgPool(1×9, s=5)``：18 ms 窗、10 ms 跳步，
 一阶零点约 55.6 Hz，与快支的核宽对齐，高频得以保留到 attention pooling 之前。
+
+边界为什么用 replicate
+----------------------
+三支卷积都是 same padding，最慢一支在句子首尾各要补 25 个点（50 ms）。默认的
+零填充会在边界处制造一个从 0 跳到 EEG 幅度的阶跃，卷积后变成首尾的伪瞬变，
+而慢支核最宽，正好最容易被这个阶跃影响。``padding_mode="replicate"`` 用边界
+采样值向外复制，不引入零点，波形在边界处保持连续；代价是首尾若干时间步近似
+"重复最后一帧"，但它们只占整句的 2~3%，且会被 attention pooling 按权重吸收。
+
+replicate 不改变输出长度与参数量：padding 仍是对称的 ``m//2``，卷积输出仍是 T。
+PyTorch 要求 replicate 的 padding 小于输入长度，这里最大 padding 为 25、
+T ≥ 1651，始终满足。
 
 停步仍是 5（10 ms），所以输出长度几乎不变：
 
@@ -84,6 +96,9 @@ class MultiScaleTemporalConv(nn.Module):
 
     输入 ``(N, 1, C, T)`` -> 输出 ``(N, k, C, T)``，通道维由各分支拼接而成。
 
+    边界用 ``padding_mode="replicate"``：向外复制最近的采样值，而不是补零，
+    避免 same padding 在句子首尾引入阶跃伪瞬变。
+
     Parameters
     ----------
     k:
@@ -107,7 +122,13 @@ class MultiScaleTemporalConv(nn.Module):
         self.kernels = kernels
         self.branch_channels = tuple(branch_channels)
         self.branches = nn.ModuleList(
-            nn.Conv2d(1, out_ch, kernel_size=(1, m), padding=(0, m // 2))
+            nn.Conv2d(
+                1,
+                out_ch,
+                kernel_size=(1, m),
+                padding=(0, m // 2),
+                padding_mode="replicate",
+            )
             for out_ch, m in zip(branch_channels, kernels)
         )
 
@@ -130,7 +151,8 @@ class TSConvFrontend(nn.Module):
         时间卷积的输出通道数，也是后面 attention pooling 的"特征宽度"。
     kernels:
         多尺度核宽（采样点）；传 ``(25,)`` 可退回单支结构。注意本前端用 same
-        padding（方案 A 是 valid padding），所以 T2 会比方案 A 略长。
+        padding（边界 replicate；方案 A 是 valid padding），所以 T2 会比方案 A
+        略长。
     m2 / s:
         时间平均池化的核长与步长，共同决定时间维的下采样倍率 ``s``。
     drop_prob:
