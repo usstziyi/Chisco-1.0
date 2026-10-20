@@ -5,7 +5,7 @@
     <out-dir>/<subject>_imagine.csv   对应 task-imagine（想象阶段）
 
 列：
-    index        该被试全表内从 0 递增的全局序号，顺序与 pkl 列表顺序一致
+    index        去重后从 0 递增的全局序号，顺序与 pkl 列表顺序一致
     day          实验天数，每 9 个 run 记作 1 天（run 1-9 -> day 1，10-18 -> day 2，…）
     run          run 编号（1 ~ 45）
     pos          该 run 内从 0 递增的位置，等价于 pkl 列表下标，用于唯一取回 EEG 数据
@@ -13,6 +13,11 @@
     n_chars      非标点字符个数（按 Unicode 类别 P* 剔除标点；空白也不计入）
     type_number  句子语义类别 id（0 ~ 38），查 json/textmaps.json 得到
     type_name    语义类别名称（中文），用 type_number 查 json/classnumber.json 得到
+
+去重：
+    遍历完某个「被试 x 任务」的全部 run 之后，以这张 CSV 为单位按 sentence 去重，
+    同一句话只保留第一次出现的那条记录（对应最早 run / run 内最小 pos 的试次），
+    其余同句试次直接丢弃；index 在去重后重新连续编号。
 
 用法：
     python scripts/make_text_csv.py                          # 自动发现并处理全部被试
@@ -93,11 +98,12 @@ def collect(pkl_dir: Path, subject: str) -> dict[str, list[Path]]:
 
 def write_csv(
     files: list[Path], out_path: Path, textmaps: dict[str, int], classnames: dict[int, str]
-) -> tuple[list[dict], int]:
+) -> tuple[list[dict], int, int]:
     """把某被试某个任务下所有 run 的句子写成一张 CSV。
 
-    返回 (写入的行, 自检不一致行数)。自检项：由全局 index 反推的 run 内偏移，
-    应恒等于生成侧的 pos 计数器；两者不等说明行序与 pkl 列表顺序脱钩。
+    返回 (写入的行, 自检不一致行数, 去重丢弃的行数)。自检项：由全局 index 反推的
+    run 内偏移，应恒等于生成侧的 pos 计数器；两者不等说明行序与 pkl 列表顺序脱钩。
+    自检在去重前完成，去重后 index 会重新编号。
     """
     rows: list[dict] = []
     mismatch = 0
@@ -127,15 +133,30 @@ def write_csv(
             )
             index += 1
 
+    # 遍历完本 CSV 的全部 run 之后按句子去重：保留第一次出现的记录。
+    # 行序与 pkl 列表顺序一致，所以"第一次"就是最早的 run / 最小的 pos。
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for row in rows:
+        if row["sentence"] in seen:
+            continue
+        seen.add(row["sentence"])
+        row["index"] = len(deduped)  # 去重后重新连续编号
+        deduped.append(row)
+    n_dropped = len(rows) - len(deduped)
+    rows = deduped
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
-    return rows, mismatch
+    return rows, mismatch, n_dropped
 
 
-def report(task: str, files: list[Path], out_path: Path, rows: list[dict], mismatch: int) -> None:
+def report(
+    task: str, files: list[Path], out_path: Path, rows: list[dict], mismatch: int, n_dropped: int
+) -> None:
     """打印单个「被试 x 任务」的导出结果。"""
     n_chars = [r["n_chars"] for r in rows]
     runs = sorted({r["run"] for r in rows})
@@ -147,7 +168,8 @@ def report(task: str, files: list[Path], out_path: Path, rows: list[dict], misma
 
     print(f"[{task:8s}] {len(files):2d} 个 run -> {out_path}")
     print(
-        f"           句子数 {len(rows)} | run 范围 {runs[0]}~{runs[-1]} | "
+        f"           句子数 {len(rows)}（去重丢弃 {n_dropped} 条） | "
+        f"run 范围 {runs[0]}~{runs[-1]} | "
         f"n_chars min/mean/max = {min(n_chars)}/{sum(n_chars) / len(n_chars):.1f}/{max(n_chars)}"
     )
     print(f"           day 覆盖 {days}（每天 9 个 run）")
@@ -196,9 +218,9 @@ def main() -> int:
         for task, files in sorted(by_task.items()):
             label = TASK_LABEL.get(task, task)
             out_path = args.out_dir / f"{subject}_{label}.csv"
-            rows, mismatch = write_csv(files, out_path, textmaps, classnames)
+            rows, mismatch, n_dropped = write_csv(files, out_path, textmaps, classnames)
             total += len(rows)
-            report(task, files, out_path, rows, mismatch)
+            report(task, files, out_path, rows, mismatch, n_dropped)
 
     print(f"\n合计导出 {total} 行，输出目录 {args.out_dir}")
     return 0
