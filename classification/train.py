@@ -474,6 +474,7 @@ def train_fold(
         n_classes=n_classes,
         embedding_dim=args.embedding_dim,
         head_dropout=args.head_dropout,
+        front_dropout=args.front_dropout,
         logit_scale=args.logit_scale,
     ).to(device)
 
@@ -640,6 +641,7 @@ def parse_args():
     parser.add_argument("--class-weight",default="inverse",choices=["none", "inverse"],help="类别权重：inverse 按训练集反频率加权（默认），none 不加权")
     parser.add_argument("--embedding-dim", type=int, default=128, help="编码器输出维度（默认 128）")
     parser.add_argument("--head-dropout", type=float, default=0.3, help="分类头前的 dropout（默认 0.3）")
+    parser.add_argument("--front-dropout", type=float, default=0.3, help="编码器前端的 dropout（默认 0.3，透传给 drop_prob）")
     parser.add_argument("--logit-scale", type=float, default=16.0, help="余弦分类器的固定缩放系数（默认 16）")
     parser.add_argument("--seed", type=int, default=0, help="随机种子（默认 0）")
     parser.add_argument("--max-runs", type=int, default=0, help="只用 run 编号最小的前 N 个 run（0 = 全部），便于快速冒烟")
@@ -658,6 +660,10 @@ def main():
         )
     if args.n_folds < 1:
         raise ValueError("--n-folds 必须 >= 1")
+    if not 0 <= args.front_dropout < 1:
+        raise ValueError("--front-dropout 必须满足 0 <= p < 1")
+    if not 0 <= args.head_dropout < 1:
+        raise ValueError("--head-dropout 必须满足 0 <= p < 1")
     set_seed(args.seed)
 
     device = torch.device(
@@ -667,7 +673,8 @@ def main():
           f"batch={args.batch_size} epochs={args.epochs} lr={args.lr} "
           f"wd={args.weight_decay} schedule={args.lr_schedule} "
           f"select={args.select_by} label_smoothing={args.label_smoothing} "
-          f"class_weight={args.class_weight} n_folds={args.n_folds} seed={args.seed}")
+          f"class_weight={args.class_weight} front_dropout={args.front_dropout} "
+          f"head_dropout={args.head_dropout} n_folds={args.n_folds} seed={args.seed}")
 
     out_dir = Path(args.out_dir) / datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -693,6 +700,7 @@ def main():
         n_classes=n_classes,
         embedding_dim=args.embedding_dim,
         head_dropout=args.head_dropout,
+        front_dropout=args.front_dropout,
         logit_scale=args.logit_scale,
     )
     n_params = sum(p.numel() for p in probe.parameters())
@@ -811,7 +819,7 @@ def main():
         f"\n[Done] {args.n_folds}-fold CV 完成\n"
         f"       summary: {summary_path}\n"
         f"       随机基线 accuracy≈{1 / n_classes:.4f}（{n_classes} 类）"
-    )
+    ) 
 
 
 if __name__ == "__main__":

@@ -43,6 +43,9 @@ class EEGTypeClassifier(nn.Module):
         编码器输出维度；分类头也以它为输入宽度。
     head_dropout:
         分类头前的 dropout 概率。
+    front_dropout:
+        编码器前端（空间卷积之后）的 dropout 概率，透传给
+        ``ConvTimeAttentionEncoder(drop_prob=...)``。
     logit_scale:
         余弦分类器的固定缩放系数，见模块文档。
     """
@@ -54,6 +57,7 @@ class EEGTypeClassifier(nn.Module):
         n_classes: int = 39,
         embedding_dim: int = 128,
         head_dropout: float = 0.3,
+        front_dropout: float = 0.3,
         logit_scale: float = 16.0,
     ):
         super().__init__()
@@ -68,7 +72,10 @@ class EEGTypeClassifier(nn.Module):
         self.logit_scale = logit_scale
 
         self.encoder = ConvTimeAttentionEncoder(
-            n_samples=n_samples, n_chans=n_chans, embedding_dim=embedding_dim
+            n_samples=n_samples,
+            n_chans=n_chans,
+            embedding_dim=embedding_dim,
+            drop_prob=front_dropout,
         )
         self.dropout = nn.Dropout(head_dropout)
         self.head = nn.Linear(embedding_dim, n_classes)
