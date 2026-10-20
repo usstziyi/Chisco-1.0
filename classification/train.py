@@ -63,6 +63,7 @@ CSV 已按句子去重，所以不存在同句跨集泄漏。
 用法::
 
     uv run python classification/train.py
+    uv run python classification/train.py --subject sub-01 --task imagine
     uv run python classification/train.py --task reading --epochs 20
     uv run python classification/train.py --n-folds 5
     uv run python classification/train.py --subject sub-02 --batch-size 32 --max-runs 5   # 冒烟
