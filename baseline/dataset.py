@@ -70,8 +70,8 @@ class ChiscoEEGDataset(Dataset):
             故默认只留 2 个；CSV 行序按 run 递增，顺序遍历时命中率接近 100%，
             随机打乱访问则会反复重载。
 
-    注意：CSV 中同一句话可能在不同 run 里重复出现（同一句子跑多个试次），
-    这里不去重，每条记录都对应各自试次的 EEG。
+    注意：CSV 已由 ``scripts/make_text_csv.py`` 按句子去重（每句只保留首次出现的
+    试次），所以一个数据集内的 sentence 唯一；本类不做额外去重。
     """
 
     def __init__(

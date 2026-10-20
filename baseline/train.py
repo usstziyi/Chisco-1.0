@@ -4,8 +4,8 @@
 
 - 一次只跑一个 ``(subject, task)``，对应一个 ``ChiscoEEGDataset``；
 - 样本是**整句** EEG ``(122, T)``，不是字级 token，所以模型也不需要 mask；
-- 数据集**不去重**（``temp/baseline`` 是去重的），同一句话可能对应多条试次的 EEG，
-  因此损失用 **multi-positive InfoNCE**：batch 内同句的所有样本互为正样本。
+- CSV 已由 ``scripts/make_text_csv.py`` 按句子去重（每句只保留首次出现的试次），
+  所以 batch 内句子两两不同，损失用标准对称 InfoNCE：对角线即正样本。
 
 数据
 ----
@@ -28,20 +28,19 @@ LRU 缓存（默认只留 2 个 run）；45 个 run 解包态合计约 21 GB，�
 
 损失
 ----
-multi-positive 对称 InfoNCE：
+标准对称 InfoNCE：
 
     logits = eeg_embedding @ text_embedding.T / temperature
-    positive[i, j] = 1[sentence_i == sentence_j]        # 对角线恒为真
-    loss   = 0.5 * (mean_i(-mean_{j in pos(i)} log_softmax(logits, 1)[i, j])
-                  + mean_j(-mean_{i in pos(j)} log_softmax(logits, 0)[i, j]))
+    loss   = 0.5 * (cross_entropy(logits, arange(B))
+                  + cross_entropy(logits.T, arange(B)))
 
-当 batch 内句子互不相同时 ``positive`` 退化成单位阵，等价于标准单正样本 InfoNCE。
+batch 内第 i 条 EEG 与第 i 条文本互为正样本，其余全部视为负样本。
 温度系数默认 0.2；同 batch 内的其他句子构成 in-batch 负样本。
 
 评测
 ----
 - ``eeg2text``：候选 = val 里的唯一句子，命中 = 前 k 名。
-- ``text2eeg``：候选 = 全部 val EEG 样本，命中 = 前 k 名里出现同句。
+- ``text2eeg``：候选 = 全部 val EEG 样本（每句一条），命中 = 前 k 名里出现自身。
 
 ``val_loss`` 越小越好，其余指标越大越好；best checkpoint 默认按 ``val_loss`` 选。
 
@@ -198,8 +197,8 @@ def split_by_sentence(
 ):
     """按句子切分 train / val，返回 ``(train_idx, val_idx, 统计信息)``。
 
-    以句子为单位而非样本：本数据集同一句话可能有多条试次，若按样本随机切分，
-    同一句话会同时出现在两侧，val 指标会被泄漏彻底污染。
+    以句子为单位而非样本：CSV 已按句子去重，当前与按样本切分等价；保留句子级
+    切分是为了防止后续数据重新出现同句多试次时，同一句话同时落在两侧造成泄漏。
     """
     sentences = [dataset.rows[i]["sentence"] for i in indices]
     unique = sorted(set(sentences))
@@ -243,39 +242,19 @@ def gather_text(sentences, lookup, device) -> torch.Tensor:
     return torch.stack([lookup[s] for s in sentences]).to(device)
 
 
-def sentence_group_ids(sentences, device) -> torch.Tensor:
-    """把句子列表映射成组 id：同句得到同一个 id。"""
-    mapping: dict[str, int] = {}
-    ids = []
-    for sentence in sentences:
-        if sentence not in mapping:
-            mapping[sentence] = len(mapping)
-        ids.append(mapping[sentence])
-    return torch.tensor(ids, dtype=torch.long, device=device)
-
-
-def _directional_term(logits: torch.Tensor, positive: torch.Tensor, dim: int):
-    """单个方向的多正样本 InfoNCE：每个锚点对自己全部正样本的 log 概率取平均。"""
-    log_prob = F.log_softmax(logits, dim=dim)
-    n_positive = positive.sum(dim=dim).clamp(min=1)
-    summed = log_prob.masked_fill(~positive, 0.0).sum(dim=dim)
-    return (-(summed / n_positive)).mean()
-
-
-def multi_positive_infonce(
-    eeg: torch.Tensor, text: torch.Tensor, sentences: list[str], temperature: float
+def symmetric_infonce(
+    eeg: torch.Tensor, text: torch.Tensor, temperature: float
 ) -> torch.Tensor:
-    """multi-positive 对称 InfoNCE：EEG->文本 与 文本->EEG 两个方向取平均。
+    """标准对称 InfoNCE：EEG->文本 与 文本->EEG 两个方向取平均。
 
-    正样本由"是否同一句话"决定，因此同句的多次试次都会被当成正样本；当 batch 内
-    句子两两不同时退化为标准单正样本 InfoNCE（对角线即正样本）。
+    第 i 条 EEG 与第 i 条文本互为正样本，batch 内其余样本全部为负样本。
+    两侧都已 L2 归一化，点积即余弦相似度。
     """
     logits = eeg @ text.t() / temperature
-    ids = sentence_group_ids(sentences, logits.device)
-    positive = ids[:, None] == ids[None, :]
+    labels = torch.arange(logits.size(0), device=logits.device)
     return 0.5 * (
-        _directional_term(logits, positive, dim=1)
-        + _directional_term(logits, positive, dim=0)
+        F.cross_entropy(logits, labels)
+        + F.cross_entropy(logits.t(), labels)
     )
 
 
@@ -296,7 +275,7 @@ def train_one_epoch(
         text = gather_text(sentences, lookup, device)     # (B, D)
 
         embedding = model(eeg)
-        loss = multi_positive_infonce(embedding, text, sentences, temperature)
+        loss = symmetric_infonce(embedding, text, temperature)
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -333,7 +312,7 @@ def evaluate(model, loader, sampler, lookup, device, temperature) -> dict:
     n = eeg.size(0)
 
     metrics = {
-        "val_loss": float(multi_positive_infonce(eeg, text, sentences, temperature)),
+        "val_loss": float(symmetric_infonce(eeg, text, temperature)),
         "n_val": n,
         "n_unique_sentences": len(set(sentences)),
     }
@@ -351,11 +330,9 @@ def evaluate(model, loader, sampler, lookup, device, temperature) -> dict:
     metrics["eeg2text_top1"] = float(hit[:, :1].any(dim=1).float().mean())
     metrics["eeg2text_top5"] = float(hit[:, :5].any(dim=1).float().mean())
 
-    # ---- text -> eeg：候选池 = 全部 val EEG 样本，命中 = 前 k 名里出现同句 ----
-    groups = sentence_group_ids(sentences, device)
-    positive = groups[:, None] == groups[None, :]
+    # ---- text -> eeg：候选池 = 全部 val EEG 样本（每句一条），命中 = 前 k 名里出现自身 ----
     ranked = (text @ eeg.t()).argsort(dim=1, descending=True)
-    hit = positive[torch.arange(n, device=device)[:, None], ranked]
+    hit = ranked.eq(torch.arange(n, device=device)[:, None])
     metrics["text2eeg_top1"] = float(hit[:, :1].any(dim=1).float().mean())
     metrics["text2eeg_top5"] = float(hit[:, :5].any(dim=1).float().mean())
 
