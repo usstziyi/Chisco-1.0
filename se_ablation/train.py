@@ -53,8 +53,13 @@ batch 内第 i 条 EEG 与第 i 条文本互为正样本，其余全部视为负
 
 用法::
 
+    # 四个消融组，各自独立跑一次
+    uv run python se_ablation/train.py --se-mode none
+    uv run python se_ablation/train.py --se-mode front
+    uv run python se_ablation/train.py --se-mode back
     uv run python se_ablation/train.py --se-mode mid
-    uv run python se_ablation/train.py --task imagine --epochs 20
+
+    uv run python se_ablation/train.py --se-mode mid --task imagine --epochs 20
     uv run python se_ablation/train.py --se-mode front --max-runs 5   # 冒烟
 """
 
